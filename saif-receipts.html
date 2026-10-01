@@ -92,6 +92,19 @@
     canvas{border-style:solid}
     *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   }
+
+  .scan{max-width:820px;margin:12px auto 0;padding:16px 18px;background:var(--paper);border:1px solid var(--rule);border-inline-start:4px solid var(--ink)}
+  .scan h2{margin:0 0 2px}
+  .scan p{margin:0 0 12px;color:var(--muted);font-size:14px}
+  .scan-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+  .thumb{position:relative;width:74px;height:74px;border:1px solid var(--rule)}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb span{position:absolute;bottom:0;inset-inline:0;background:rgba(15,59,76,.85);color:#fff;font-size:11px;text-align:center}
+  .thumb button{position:absolute;top:-8px;left:-8px;width:22px;height:22px;border-radius:50%;border:0;background:var(--seal);color:#fff;cursor:pointer;line-height:1}
+  #scanStatus{font-size:14px;color:var(--muted);margin-inline-start:6px}
+  .auto{background:rgba(242,196,82,.22)}
+  @media print{.auto{background:none}}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
@@ -105,6 +118,21 @@
   <button class="btn" id="dlBtn" onclick="downloadPDF()" hidden>تنزيل الـ PDF</button>
   <button class="btn" onclick="newReceipt()">إيصال جديد</button>
 </div>
+
+
+<section class="scan no-print">
+  <h2>تعبئة تلقائية من الصور</h2>
+  <p>صوّر العقد والشيكات فتُكتب البيانات في الإيصال. الحقول المظللة بالأصفر قُرئت من الصور، راجعها ثم وقّعا.</p>
+  <div class="scan-row">
+    <label class="btn">تصوير العقد<input type="file" id="fContract" accept="image/*" multiple hidden></label>
+    <label class="btn">تصوير الشيكات<input type="file" id="fCheques" accept="image/*" multiple hidden></label>
+  </div>
+  <div class="thumbs" id="thumbs"></div>
+  <div class="scan-row">
+    <button class="btn primary" id="readBtn" onclick="readImages()" disabled>قراءة البيانات وتعبئة الإيصال</button>
+    <span id="scanStatus" role="status"></span>
+  </div>
+</section>
 
 <main class="sheet" id="sheet">
   <div class="band">
@@ -255,9 +283,76 @@ function newReceipt(){
   document.querySelectorAll('.sheet input, .sheet textarea').forEach(el=>el.value='');
   $('rows').innerHTML=''; addRow();
   $('rno').value=newNumber(); $('rdate').value=today();
+  shots=[]; renderShots(); $('scanStatus').textContent='';
   pdfFile=null; $('shareBtn').hidden=$('dlBtn').hidden=true; $('pdfBtn').textContent='إنشاء PDF';
   pads.forEach(p=>p.clear());
 }
+/* ---------- Auto-fill from photos ---------- */
+// ضع مفتاح Gemini هنا بين العلامتين (من aistudio.google.com ← Get API key)
+const GEMINI_API_KEY='ضع-المفتاح-هنا';
+const GEMINI_MODEL='gemini-3.5-flash';
+const READ_PROMPT=`الصور لعقد إيجار محل تجاري في الإمارات و/أو شيكات الإيجار.
+استخرج البيانات وأرجع JSON فقط بهذا الشكل بالضبط:
+{"tenant":"اسم المستأجر (شخص أو شركة) كما هو مكتوب","phone":"رقم هاتف المستأجر","unit":"رقم المحل أو الوحدة","location":"موقع الوحدة باختصار","contract_from":"YYYY-MM-DD","contract_to":"YYYY-MM-DD","annual_rent":0,"cheques":[{"number":"رقم الشيك","bank":"اسم البنك بالعربي","date":"YYYY-MM-DD","amount":0}]}
+القواعد: المبالغ أرقام فقط بدون فواصل أو عملة. التواريخ بصيغة YYYY-MM-DD. أي معلومة غير واضحة أو غير موجودة اكتب null ولا تخمّن.
+الشيكات من صور الشيكات فقط، مرتبة حسب تاريخ الاستحقاق. إذا لم توجد صور شيكات أرجع "cheques": [].`;
+
+let shots=[];
+function compress(file){return new Promise((res,rej)=>{
+  const img=new Image();
+  img.onload=()=>{const k=Math.min(1,1600/Math.max(img.width,img.height));
+    const c=document.createElement('canvas');c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);
+    c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(img.src);
+    res(c.toDataURL('image/jpeg',0.82));};
+  img.onerror=rej; img.src=URL.createObjectURL(file);});}
+async function addShots(files,kind){
+  for(const f of files){try{shots.push({kind,url:await compress(f)});}catch(e){}}
+  renderShots();
+}
+function renderShots(){
+  $('thumbs').innerHTML='';
+  shots.forEach((s,i)=>{const d=document.createElement('div');d.className='thumb';
+    d.innerHTML=`<img src="${s.url}" alt=""><span>${s.kind==='contract'?'عقد':'شيك'}</span><button aria-label="حذف الصورة">×</button>`;
+    d.querySelector('button').onclick=()=>{shots.splice(i,1);renderShots();};
+    $('thumbs').appendChild(d);});
+  $('readBtn').disabled=!shots.length;
+}
+$('fContract').onchange=e=>{addShots([...e.target.files],'contract');e.target.value='';};
+$('fCheques').onchange=e=>{addShots([...e.target.files],'cheque');e.target.value='';};
+
+async function readImages(){
+  if(GEMINI_API_KEY.includes('ضع-المفتاح')){alert('ضع مفتاح Gemini في أعلى قسم التعبئة التلقائية داخل الكود.');return;}
+  const btn=$('readBtn'); btn.disabled=true; $('scanStatus').textContent='جاري قراءة الصور…';
+  try{
+    const parts=[];
+    shots.forEach((s,i)=>{parts.push({text:`صورة ${i+1}: ${s.kind==='contract'?'عقد الإيجار':'شيك'}`});
+      parts.push({inline_data:{mime_type:'image/jpeg',data:s.url.split(',')[1]}});});
+    parts.push({text:READ_PROMPT});
+    const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,{
+      method:'POST',headers:{'content-type':'application/json','x-goog-api-key':GEMINI_API_KEY},
+      body:JSON.stringify({contents:[{parts}],generationConfig:{responseMimeType:'application/json',temperature:0}})});
+    const d=await r.json();
+    if(r.status===429)throw new Error('انتهت الحصة المجانية مؤقتاً، حاول بعد دقيقة');
+    if(!r.ok)throw new Error((d.error&&d.error.message)||'خطأ في القراءة');
+    const text=(d.candidates?.[0]?.content?.parts||[]).map(x=>x.text||'').join('');
+    fillFrom(JSON.parse(text.slice(text.indexOf('{'),text.lastIndexOf('}')+1)));
+    $('scanStatus').textContent='تمت التعبئة. راجع الحقول المظللة ثم وقّعا.';
+  }catch(e){$('scanStatus').textContent='لم تتم القراءة: '+e.message;}
+  btn.disabled=!shots.length;
+}
+function fillFrom(d){
+  const put=(el,v)=>{if(v!==null&&v!==undefined&&v!==''){el.value=v;if(el.value!=='')el.classList.add('auto');}};
+  put($('tenant'),d.tenant); put($('phone'),d.phone); put($('unit'),d.unit); put($('loc'),d.location);
+  put($('from'),d.contract_from); put($('to'),d.contract_to); put($('annual'),d.annual_rent);
+  if(Array.isArray(d.cheques)&&d.cheques.length){
+    $('rows').innerHTML='';
+    d.cheques.forEach(c=>{addRow();const ins=$('rows').lastElementChild.querySelectorAll('input');
+      [c.number,c.bank,c.date,c.amount].forEach((v,i)=>put(ins[i],v));});
+  }
+  calc();
+}
+document.addEventListener('input',e=>e.target.classList&&e.target.classList.remove('auto'));
+
 /* ---------- PDF of the same sheet ---------- */
 let pdfFile=null;
 const fmtDate=v=>v?v.split('-').reverse().join('/'):'';
